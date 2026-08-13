@@ -1,0 +1,49 @@
+[package]
+name = "ai-agent"
+version = "0.1.0"
+edition = "2024"
+
+[[example]]
+name = "chat"
+path = "examples/chat.rs"
+
+[[example]]
+name = "chat_schema"
+path = "examples/chat_schema.rs"
+
+[[example]]
+name = "chat_stream"
+path = "examples/chat_stream.rs"
+
+[[example]]
+name = "chat_json_output_ds"
+path = "examples/chat_json_output_ds.rs"
+
+[[example]]
+name = "chat_tool_calculator"
+path = "examples/chat_tool_calculator.rs"
+
+[[example]]
+name = "chat_agent"
+path = "examples/chat_agent.rs"
+
+[dependencies]
+anyhow = "1.0.104"
+async-openai = { version = "0.41.3", features = ["full"] }
+dotenvy = "0.15.7"
+futures = "0.3.33"
+schemars = "1.2.2"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+tokio = { version = "1.53.1", features = ["full"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["json"] }
+async-stream = "0.3.6"
+backon = "1.6.0"
+tavily = "2.1.0"
+async-trait = "0.1.91"
+reqwest = "0.12.28"
+rmcp = { version = "3.1.2", features = ["client", "server", "macros", "transport-io", "transport-child-process"] }
+chrono = "0.4.45"
+uuid = { version = "1.24.0", features = ["v4"] }
+tiktoken-rs = "0.12.0"
