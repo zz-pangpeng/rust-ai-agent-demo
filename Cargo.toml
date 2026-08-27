@@ -47,3 +47,4 @@ rmcp = { version = "3.1.2", features = ["client", "server", "macros", "transport
 chrono = "0.4.45"
 uuid = { version = "1.24.0", features = ["v4"] }
 tiktoken-rs = "0.12.0"
+config = "0.15.25"

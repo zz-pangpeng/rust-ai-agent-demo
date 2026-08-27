@@ -1,11 +1,13 @@
-use std::io::Write;
 use std::time::Duration;
 use schemars::schema_for;
 use serde_json::Value;
 use tavily::{SearchRequest, Tavily};
 use tracing::{error, info};
+use crate::agent::context::Context;
+use crate::agent::event::ToolCallStatus;
 use crate::modals::tool::ToolView;
 use crate::modals::web_search::{Topic, WebSearchRequest};
+use crate::permission::{Permission, PermissionResult};
 use crate::tools::tool::Tool;
 use crate::tools::vector::chunk::chunk_handle;
 use crate::tools::vector::search::vector_search;
@@ -52,28 +54,33 @@ impl Tool for WebSearch {
         Ok(format!("{:?}", result))
     }
 
-    async fn before_callback(&self, tool_view: &ToolView) -> Option<String> {
+    async fn before_callback(&self, tool_view: &ToolView, _context: &mut Context, permission: &mut Permission) -> Option<(ToolCallStatus, String)> {
         if tool_view.name != self.name() {
             return None;
         }
-        println!("即将调用{}进行网络搜索，是否允许", self.name());
+        println!("即将调用{}进行网络搜索", self.name());
         println!("搜索内容{}", tool_view.arguments.clone());
 
-        let result = tokio::task::spawn_blocking(move || {
-            println!("是否执行？（y/n）");
-            std::io::stdout().flush().unwrap();
-            let mut input = "".to_string();
-            std::io::stdin().read_line(&mut input).unwrap();
-            input.trim().eq_ignore_ascii_case("y")
-
-        }).await.unwrap_or(false);
-        if result {
-            return None;
+        let key = format!("{}-{}-{}", tool_view.tool_call_id, tool_view.name, tool_view.arguments);
+        let permission_result = permission.query(key, tool_view.name.clone()).await;
+        match permission_result {
+            PermissionResult::GrantedOnce | PermissionResult::GrantedAlways => {
+                None
+            }
+            PermissionResult::Denied => {
+                Some((ToolCallStatus::Denied, "用户拒绝".to_string()))
+            }
+            PermissionResult::Timeout => {
+                Some((ToolCallStatus::Failure, "等待用户授权超时".to_string()))
+            }
+            PermissionResult::NoInput => {
+                Some((ToolCallStatus::Failure, "用户输入无法识别，视为未授权".to_string()))
+            }
         }
-        Some(format!("用户拒绝使用{}工具执行", self.name()))
+
     }
 
-    async fn after_callback(&self, tool_view: &ToolView, result: String) -> String {
+    async fn after_callback(&self, tool_view: &ToolView, _context: &mut Context, result: String) -> String {
         let chars = result.chars().collect::<Vec<char>>();
         info!("chars: {:?}", chars.len());
         if chars.len() < COMPRESS_THRESHOLD {

@@ -1,20 +1,25 @@
 use std::collections::HashMap;
+use std::time::Duration;
+use tokio::time::timeout;
 use anyhow::anyhow;
 use async_openai::types::chat::{ChatCompletionMessageToolCall, ChatCompletionMessageToolCalls, ChatCompletionRequestAssistantMessageArgs, ChatCompletionRequestMessage, ChatCompletionRequestSystemMessageArgs, ChatCompletionRequestToolMessageArgs, ChatCompletionRequestUserMessageArgs, ChatCompletionTools, CreateChatCompletionRequestArgs, FunctionCall};
 use async_openai::Client;
 use backon::{ExponentialBuilder, Retryable};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use tracing::{error, span, Instrument, Level};
 use crate::agent::context::Context;
 use crate::agent::event::{ContentItem, Event, ToolCallStatus};
 use crate::modals::tool::ToolView;
-use crate::tools::tool::Tool;
+use crate::permission::Permission;
+use crate::tools::tool::{Tool};
 
 pub struct Agent {
     model: String,
     system_instruction:  Option<String>,
     max_steps: usize,
     tool_box_map: HashMap<String, Box<dyn Tool>>,
-    tool_box: Vec<ChatCompletionTools>
+    tool_box: Vec<ChatCompletionTools>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -26,12 +31,13 @@ pub struct AgentResult {
 
 impl Agent {
     pub fn new(model: impl Into<String>, system_instruction: Option<impl Into<String>>) -> Self {
+
         Self {
             model: model.into(),
             system_instruction:  system_instruction.map(Into::into),
             max_steps: 10,
             tool_box: Vec::new(),
-            tool_box_map: HashMap::new()
+            tool_box_map: HashMap::new(),
         }
     }
 
@@ -116,6 +122,7 @@ impl Agent {
     pub async fn run(&self, prompt: String) -> anyhow::Result<AgentResult> {
         let client = Client::new();
         let mut context = Context::new();
+        let mut permission = Permission::new(Duration::from_secs(context.tool_config.permission_timeout));
         let event = Event::new(
             context.execution_id.clone(),
             "user",
@@ -146,15 +153,26 @@ impl Agent {
                 .build()?;
 
             let response = (|| async {
-                client.chat().create(request.clone()).await
-            }).retry(ExponentialBuilder::new().with_max_times(3)).await?;
+                match timeout(
+                    Duration::from_secs(context.tool_config.model_execute_timeout),
+                    client.chat().create(request.clone()),
+                )
+                .await
+                {
+                    Ok(result) => result.map_err(Into::into),
+                    Err(_) => Err(anyhow!(
+                        "model request timed out after {}s",
+                        context.tool_config.model_execute_timeout
+                    )),
+                }
+            }).retry(ExponentialBuilder::new().with_max_times(context.tool_config.execute_retry_count)).await?;
 
             let message = response.choices.into_iter()
                 .next().ok_or_else(|| anyhow!("no message choices"))?.message;
 
             if let Some(tool_calls) = message.tool_calls {
-                let _ = self.add_tool_call(&tool_calls, &mut context)?;
-                let _ = self.tool_execute(&tool_calls, &mut context).await?;
+                self.add_tool_call(&tool_calls, &mut context);
+                self.tool_execute(&tool_calls, &mut context, &mut permission).await;
                 context.increment_step();
             } else {
                 let output = message.content.ok_or_else(|| anyhow!("no content"))?;
@@ -166,15 +184,19 @@ impl Agent {
 
     }
 
-    pub fn add_tool_call(&self, tool_calls: &Vec<ChatCompletionMessageToolCalls>, context: &mut Context) -> anyhow::Result<()> {
+    pub fn add_tool_call(&self, tool_calls: &Vec<ChatCompletionMessageToolCalls>, context: &mut Context) {
         let mut content = vec![];
         for tool_call in tool_calls {
             if let ChatCompletionMessageToolCalls::Function(tool) = tool_call {
+                // 参数解析失败也保留 ToolCall,保证 tool_call_id 在 assistant 消息里存在;
+                // 具体结果/错误统一由 tool_execute 产生唯一一条 ToolCallResult
+                let arguments = serde_json::from_str::<Value>(&tool.function.arguments)
+                    .unwrap_or_else(|_| Value::String(tool.function.arguments.clone()));
                 content.push(
                     ContentItem::ToolCall {
                         tool_call_id: tool.id.clone(),
                         name: tool.function.name.clone(),
-                        arguments: serde_json::from_str(&tool.function.arguments)?
+                        arguments
                     }
                 );
             }
@@ -185,38 +207,32 @@ impl Agent {
             content,
         );
         context.add_event(event);
-        Ok(())
     }
 
-    pub async fn tool_execute(&self, tool_calls: &Vec<ChatCompletionMessageToolCalls>, context: &mut Context) -> anyhow::Result<()> {
-
+    pub async fn tool_execute(&self, tool_calls: &Vec<ChatCompletionMessageToolCalls>, context: &mut Context, permission: &mut Permission) {
         for tool_call in tool_calls {
             if let ChatCompletionMessageToolCalls::Function(tool) = tool_call {
                 let name = tool.function.name.clone();
                 let args = tool.function.arguments.clone();
-
+                let span = span!(Level::INFO, "tool call", name = name, id = tool.id.clone());
                 let tool_view = ToolView {
                     tool_call_id: tool.id.clone(),
                     name: name.clone(),
                     arguments: args.clone(),
-                    model: self.model.clone(),
+                    model: self.model.clone()
                 };
 
-                let (status, content) = match self.tool_box_map.get(&name) {
-                    Some(tool) => {
-                        if let Some(result) = tool.before_callback(&tool_view).await {
-                            (ToolCallStatus::Success, result)
-                        } else {
-                            match tool.execute(args.as_str()).await {
-                                Ok(result) => (ToolCallStatus::Success, tool.after_callback(&tool_view, result).await),
-                                Err(error) => (ToolCallStatus::Failure, format!("调用函数{}， 参数{}， 执行失败： {}", name, args, error)),
-                            }
+                let (status, content) = async {
+                    match self.tool_box_map.get(&name) {
+                        Some(tool) => {
+                            tool.execute_with_timeout(args.as_str(), &tool_view, context, permission).await
+                        },
+                        None => {
+                            error!("tool not found");
+                            (ToolCallStatus::Failure, format!("找不到工具{}", name.clone()))
                         }
-                    },
-                    None => {
-                        (ToolCallStatus::Failure, format!("找不到工具{}", name.clone()))
                     }
-                };
+                }.instrument(span).await;
 
                 let event = Event::new(
                     context.execution_id.clone(),
@@ -233,7 +249,6 @@ impl Agent {
                 context.add_event(event);
             }
         }
-        Ok(())
     }
 
 }

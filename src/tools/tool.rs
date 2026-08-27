@@ -1,8 +1,14 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 use anyhow::anyhow;
 use async_openai::types::chat::{ChatCompletionTool, ChatCompletionTools, FunctionObjectArgs};
+use tokio::time::timeout;
+use tracing::{debug, error, info};
+use crate::agent::context::Context;
+use crate::agent::event::ToolCallStatus;
 use crate::modals::tool::ToolView;
+use crate::permission::Permission;
 use crate::tools::calculator::CalculatorTool;
 use crate::tools::mcp::client::McpClient;
 use crate::tools::mcp::tool::McpTool;
@@ -25,15 +31,72 @@ pub trait Tool: Send + Sync {
             function
         }))
     }
+
     async fn execute(&self, args: &str) -> anyhow::Result<String>;
+
+    async fn execute_with_timeout(&self, args: &str, tool_view: &ToolView, context: &mut Context, permission: &mut Permission) -> (ToolCallStatus, String) {
+        match timeout(Duration::from_secs(context.tool_config.all_execute_timeout), async {
+            if let Some(result) = self.before_execute(&tool_view, context, permission).await {
+                info!("tool before callback: {:?}", result);
+                result
+            } else {
+                match self.execute(args).await {
+                    Ok(result) => {
+                        debug!("tool execute success: {}", result);
+                        let after_callback_result = self.after_execute(&tool_view, context, result).await;
+                        debug!("tool after callback result: {}", after_callback_result);
+                        (ToolCallStatus::Success, after_callback_result)
+                    },
+                    Err(error) => {
+                        error!("tool execute error: {}", error);
+                        (ToolCallStatus::Failure, format!("tool execute failure： {}",  error))
+                    },
+                }
+            }
+        }).await {
+            Ok(result) => {
+                result
+            },
+            Err(_) => {
+                (ToolCallStatus::Failure, "tool execute timed out".to_string())
+            }
+        }
+    }
     
-    async fn before_callback(&self, _tool_view: &ToolView) -> Option<String> {
+    async fn before_callback(&self, _tool_view: &ToolView, _context: &mut Context, _permission: &mut Permission) -> Option<(ToolCallStatus, String)> {
         None
     }
+
+    async fn before_execute(&self, tool_view: &ToolView, context: &mut Context, permission: &mut Permission) -> Option<(ToolCallStatus, String)> {
+        match timeout(Duration::from_secs(context.tool_config.step_execute_timeout), self.before_callback(tool_view, context, permission)).await {
+            Ok(result) => {
+                result
+            },
+            Err(_) => {
+                let text = "tool before_callback execute timeout";
+                info!("{text}");
+                Some((ToolCallStatus::Failure, text.to_string()))
+            }
+        }
+    }
     
-    async fn after_callback(&self, _tool_view: &ToolView, result: String) -> String {
+    async fn after_callback(&self, _tool_view: &ToolView, _context: &mut Context, result: String) -> String {
         result
     }
+
+
+    async fn after_execute(&self,tool_view: &ToolView, context: &mut Context, result: String) -> String {
+        match timeout(Duration::from_secs(context.tool_config.step_execute_timeout), self.after_callback(tool_view, context, result.clone())).await {
+            Ok(after_callback_result) => {
+                after_callback_result
+            },
+            Err(_) => {
+                info!("{} tool after_callback execute timeout", self.name());
+                result
+            }
+        }
+    }
+
 }
 
 pub async fn get_tools() -> anyhow::Result<(Vec<ChatCompletionTools>, HashMap<String, Box<dyn Tool>>)> {

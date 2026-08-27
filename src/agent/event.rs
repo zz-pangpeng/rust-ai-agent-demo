@@ -29,6 +29,7 @@ pub enum ContentItem {
 pub enum ToolCallStatus {
     Success,
     Failure,
+    Denied
 }
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Event {

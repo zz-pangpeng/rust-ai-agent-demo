@@ -3,6 +3,7 @@ mod state;
 mod modals;
 mod tools;
 mod agent;
+mod permission;
 
 use tracing::{Level};
 use tracing_subscriber::FmtSubscriber;
