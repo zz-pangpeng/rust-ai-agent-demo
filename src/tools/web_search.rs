@@ -3,7 +3,6 @@ use schemars::schema_for;
 use serde_json::Value;
 use tavily::{SearchRequest, Tavily};
 use tracing::{error, info};
-use crate::agent::context::Context;
 use crate::agent::event::ToolCallStatus;
 use crate::modals::tool::ToolView;
 use crate::modals::web_search::{Topic, WebSearchRequest};
@@ -54,7 +53,7 @@ impl Tool for WebSearch {
         Ok(format!("{:?}", result))
     }
 
-    async fn before_callback(&self, tool_view: &ToolView, _context: &mut Context, permission: &mut Permission) -> Option<(ToolCallStatus, String)> {
+    async fn before_callback(&self, tool_view: &ToolView, permission: &mut Permission) -> Option<(ToolCallStatus, String)> {
         if tool_view.name != self.name() {
             return None;
         }
@@ -80,7 +79,7 @@ impl Tool for WebSearch {
 
     }
 
-    async fn after_callback(&self, tool_view: &ToolView, _context: &mut Context, result: String) -> String {
+    async fn after_callback(&self, tool_view: &ToolView, result: String) -> String {
         let chars = result.chars().collect::<Vec<char>>();
         info!("chars: {:?}", chars.len());
         if chars.len() < COMPRESS_THRESHOLD {

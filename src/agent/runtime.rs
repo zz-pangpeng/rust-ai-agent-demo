@@ -3,13 +3,15 @@ use std::time::Duration;
 use tokio::time::timeout;
 use anyhow::anyhow;
 use async_openai::types::chat::{ChatCompletionMessageToolCall, ChatCompletionMessageToolCalls, ChatCompletionRequestAssistantMessageArgs, ChatCompletionRequestMessage, ChatCompletionRequestSystemMessageArgs, ChatCompletionRequestToolMessageArgs, ChatCompletionRequestUserMessageArgs, ChatCompletionTools, CreateChatCompletionRequestArgs, FunctionCall};
-use async_openai::Client;
 use backon::{ExponentialBuilder, Retryable};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tracing::{error, span, Instrument, Level};
+use tracing::{error, info, span, Instrument, Level};
 use crate::agent::context::Context;
 use crate::agent::event::{ContentItem, Event, ToolCallStatus};
+use crate::agent::output::{NOT_OUTPUT, OUT_MAX_STEPS, TIMEOUT, TOOL_NOT_FOUND};
+use crate::modals::chat_client::{ChatClient, RealChatClient};
+use crate::modals::config::AgentConfig;
 use crate::modals::tool::ToolView;
 use crate::permission::Permission;
 use crate::tools::tool::{Tool};
@@ -20,6 +22,9 @@ pub struct Agent {
     max_steps: usize,
     tool_box_map: HashMap<String, Box<dyn Tool>>,
     tool_box: Vec<ChatCompletionTools>,
+    chat_client: Box<dyn ChatClient>,
+    context: Context,
+    config: AgentConfig,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -31,13 +36,16 @@ pub struct AgentResult {
 
 impl Agent {
     pub fn new(model: impl Into<String>, system_instruction: Option<impl Into<String>>) -> Self {
-
+        let config = AgentConfig::new();
         Self {
             model: model.into(),
             system_instruction:  system_instruction.map(Into::into),
-            max_steps: 10,
+            max_steps: config.agent_max_steps,
             tool_box: Vec::new(),
             tool_box_map: HashMap::new(),
+            chat_client: Box::new(RealChatClient::new()),
+            context: Context::new(),
+            config: AgentConfig::new()
         }
     }
 
@@ -52,7 +60,19 @@ impl Agent {
         self
     }
 
-    pub fn build_message(&self, context: &Context) -> anyhow::Result<Vec<ChatCompletionRequestMessage>> {
+    pub fn bind_chat_client(&mut self, chat_client: Box<dyn ChatClient>) -> &mut Self {
+        self.chat_client = chat_client;
+        self
+    }
+    
+    pub fn bind_config(&mut self, agent_config: AgentConfig) -> &mut Self {
+        self.max_steps = agent_config.agent_max_steps.clone();
+        self.config = agent_config;
+        self
+    }
+
+
+    pub fn build_message(&self) -> anyhow::Result<Vec<ChatCompletionRequestMessage>> {
         let mut messages = Vec::new();
 
         if let Some(system_instruction) = &self.system_instruction {
@@ -64,7 +84,7 @@ impl Agent {
             );
         }
 
-        for event in &context.event {
+        for event in &self.context.event {
             for content_item in &event.content {
                 match content_item {
                     ContentItem::Message { role, content} => {
@@ -119,12 +139,11 @@ impl Agent {
         Ok(messages)
     }
 
-    pub async fn run(&self, prompt: String) -> anyhow::Result<AgentResult> {
-        let client = Client::new();
-        let mut context = Context::new();
-        let mut permission = Permission::new(Duration::from_secs(context.tool_config.permission_timeout));
+    pub async fn run(&mut self, prompt: String) -> anyhow::Result<AgentResult> {
+        self.context = Context::new();
+        let mut permission = Permission::new(Duration::from_secs(self.config.permission_timeout));
         let event = Event::new(
-            context.execution_id.clone(),
+            self.context.execution_id.clone(),
             "user",
             vec![
                 ContentItem::Message {
@@ -133,19 +152,19 @@ impl Agent {
                 }
             ]
         );
-        context.add_event(event);
+        self.context.add_event(event);
         let mut result = AgentResult {
             input: prompt.clone(),
             output: "".to_string(),
-            context: context.clone()
+            context: self.context.clone()
         };
         loop {
-            if context.current_step >= self.max_steps {
-                result.output = "超过最大执行步数".to_string();
-                result.context = context.clone();
+            if self.context.current_step >= self.max_steps {
+                result.output = OUT_MAX_STEPS.to_string();
+                result.context = self.context.clone();
                 return Ok(result);
             }
-            let messages = self.build_message(&context)?;
+            let messages = self.build_message()?;
             let request = CreateChatCompletionRequestArgs::default()
                 .messages(messages)
                 .model(&self.model)
@@ -154,37 +173,36 @@ impl Agent {
 
             let response = (|| async {
                 match timeout(
-                    Duration::from_secs(context.tool_config.model_execute_timeout),
-                    client.chat().create(request.clone()),
+                    Duration::from_secs(self.config.agent_execute_timeout),
+                    self.chat_client.chat_create(request.clone()),
                 )
                 .await
                 {
                     Ok(result) => result.map_err(Into::into),
-                    Err(_) => Err(anyhow!(
-                        "model request timed out after {}s",
-                        context.tool_config.model_execute_timeout
-                    )),
+                    Err(_) => Err(anyhow!(TIMEOUT)),
                 }
-            }).retry(ExponentialBuilder::new().with_max_times(context.tool_config.execute_retry_count)).await?;
+            }).retry(ExponentialBuilder::new().with_max_times(self.config.agent_execute_retry_count)).await?;
 
             let message = response.choices.into_iter()
-                .next().ok_or_else(|| anyhow!("no message choices"))?.message;
+                .next().ok_or_else(|| anyhow!(NOT_OUTPUT))?.message;
+
+            info!("message: {:?}", message);
 
             if let Some(tool_calls) = message.tool_calls {
-                self.add_tool_call(&tool_calls, &mut context);
-                self.tool_execute(&tool_calls, &mut context, &mut permission).await;
-                context.increment_step();
+                self.add_tool_call(&tool_calls);
+                self.tool_execute(&tool_calls, &mut permission).await;
+                self.context.increment_step();
             } else {
-                let output = message.content.ok_or_else(|| anyhow!("no content"))?;
+                let output = message.content.ok_or_else(|| anyhow!(NOT_OUTPUT))?;
                 result.output = output;
-                result.context = context.clone();
+                result.context = self.context.clone();
                 return Ok(result);
             }
         }
 
     }
 
-    pub fn add_tool_call(&self, tool_calls: &Vec<ChatCompletionMessageToolCalls>, context: &mut Context) {
+    pub fn add_tool_call(&mut self, tool_calls: &Vec<ChatCompletionMessageToolCalls>) {
         let mut content = vec![];
         for tool_call in tool_calls {
             if let ChatCompletionMessageToolCalls::Function(tool) = tool_call {
@@ -202,14 +220,14 @@ impl Agent {
             }
         }
         let event = Event::new(
-            context.execution_id.clone(),
+            self.context.execution_id.clone(),
             "assistant",
             content,
         );
-        context.add_event(event);
+        self.context.add_event(event);
     }
 
-    pub async fn tool_execute(&self, tool_calls: &Vec<ChatCompletionMessageToolCalls>, context: &mut Context, permission: &mut Permission) {
+    pub async fn tool_execute(&mut self, tool_calls: &Vec<ChatCompletionMessageToolCalls>, permission: &mut Permission) {
         for tool_call in tool_calls {
             if let ChatCompletionMessageToolCalls::Function(tool) = tool_call {
                 let name = tool.function.name.clone();
@@ -219,23 +237,24 @@ impl Agent {
                     tool_call_id: tool.id.clone(),
                     name: name.clone(),
                     arguments: args.clone(),
-                    model: self.model.clone()
+                    model: self.model.clone(),
+                    config: self.config.clone(),
                 };
 
                 let (status, content) = async {
                     match self.tool_box_map.get(&name) {
                         Some(tool) => {
-                            tool.execute_with_timeout(args.as_str(), &tool_view, context, permission).await
+                            tool.execute_with_timeout(args.as_str(), &tool_view, permission).await
                         },
                         None => {
                             error!("tool not found");
-                            (ToolCallStatus::Failure, format!("找不到工具{}", name.clone()))
+                            (ToolCallStatus::Failure, format!("{}: {}", TOOL_NOT_FOUND,  name.clone()))
                         }
                     }
                 }.instrument(span).await;
 
                 let event = Event::new(
-                    context.execution_id.clone(),
+                    self.context.execution_id.clone(),
                     "tool_calls",
                     vec![
                         ContentItem::ToolCallResult {
@@ -246,7 +265,7 @@ impl Agent {
                         }
                     ],
                 );
-                context.add_event(event);
+                self.context.add_event(event);
             }
         }
     }
