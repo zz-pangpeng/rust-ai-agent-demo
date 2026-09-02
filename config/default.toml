@@ -4,3 +4,4 @@ agent_execute_retry_count = 3
 tool_execute_timeout = 30
 tool_callback_execute_timeout = 10
 permission_timeout = 5
+permission_mode = "interactive"

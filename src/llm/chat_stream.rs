@@ -1,9 +1,16 @@
 use async_openai::Client;
-use async_openai::types::chat::{ChatCompletionRequestSystemMessageArgs, ChatCompletionRequestUserMessageArgs, CreateChatCompletionRequestArgs};
-use futures::{Stream, StreamExt};
+use async_openai::types::chat::{
+    ChatCompletionRequestSystemMessageArgs, ChatCompletionRequestUserMessageArgs,
+    CreateChatCompletionRequestArgs,
+};
 use async_stream::stream;
+use futures::{Stream, StreamExt};
 
-pub fn chat_stream(model: &str, system: Option<&str>, prompt: &str) -> impl Stream<Item = anyhow::Result<String>> {
+pub fn chat_stream(
+    model: &str,
+    system: Option<&str>,
+    prompt: &str,
+) -> impl Stream<Item = anyhow::Result<String>> {
     stream! {
         let client = Client::new();
     let mut messages = vec![];

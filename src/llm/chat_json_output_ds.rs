@@ -1,9 +1,12 @@
-use async_openai::Client;
-use async_openai::types::chat::{ChatCompletionRequestSystemMessageArgs, ChatCompletionRequestUserMessageArgs, CreateChatCompletionRequestArgs};
-use async_openai::types::chat::ResponseFormat::JsonObject;
-use tracing::info;
-use crate::state::DEEPSEEK_V4_FLASH;
 use crate::modals::math_solution::MathSolution;
+use crate::state::DEEPSEEK_V4_FLASH;
+use async_openai::Client;
+use async_openai::types::chat::ResponseFormat::JsonObject;
+use async_openai::types::chat::{
+    ChatCompletionRequestSystemMessageArgs, ChatCompletionRequestUserMessageArgs,
+    CreateChatCompletionRequestArgs,
+};
+use tracing::info;
 
 pub async fn chat_json_output_ds(prompt: &str) -> anyhow::Result<String> {
     let client = Client::new();
@@ -16,7 +19,7 @@ pub async fn chat_json_output_ds(prompt: &str) -> anyhow::Result<String> {
         ChatCompletionRequestUserMessageArgs::default()
             .content(prompt)
             .build()?
-            .into()
+            .into(),
     ];
 
     let request = CreateChatCompletionRequestArgs::default()
@@ -28,7 +31,11 @@ pub async fn chat_json_output_ds(prompt: &str) -> anyhow::Result<String> {
 
     let response = client.chat().create(request).await?;
 
-    let result: MathSolution = response.choices.into_iter().next().and_then(|c| c.message.content)
+    let result: MathSolution = response
+        .choices
+        .into_iter()
+        .next()
+        .and_then(|c| c.message.content)
         .ok_or_else(|| anyhow::anyhow!("no message found"))
         .and_then(|c| serde_json::from_str(&c).map_err(Into::into))?;
 
@@ -40,7 +47,8 @@ pub async fn chat_json_output_ds(prompt: &str) -> anyhow::Result<String> {
 fn get_json_output_schema() -> String {
     let schema = schemars::schema_for!(MathSolution);
     let schema_json = serde_json::to_string_pretty(&schema).unwrap();
-    format!(r#"
+    format!(
+        r#"
     The user will provide some exam text. Please parse the "question" and "answer" and output them in JSON format.
 
     EXAMPLE INPUT:
@@ -50,5 +58,6 @@ fn get_json_output_schema() -> String {
     {schema_json}
 
 
-    "#)
+    "#
+    )
 }

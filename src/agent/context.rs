@@ -1,7 +1,7 @@
-use std::collections::HashMap;
+use crate::agent::event::Event;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use crate::agent::event::Event;
+use std::collections::HashMap;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Context {
@@ -12,10 +12,8 @@ pub struct Context {
     pub result: Option<String>,
 }
 
-
 impl Context {
     pub fn new() -> Self {
-        
         Self {
             execution_id: uuid::Uuid::new_v4().to_string(),
             event: Vec::new(),
@@ -24,15 +22,14 @@ impl Context {
             result: None,
         }
     }
-    
+
     pub fn add_event(&mut self, event: Event) {
         self.event.push(event);
     }
 
-    pub fn increment_step(&mut self){
+    pub fn increment_step(&mut self) {
         self.current_step += 1;
     }
-
 }
 
 impl Default for Context {

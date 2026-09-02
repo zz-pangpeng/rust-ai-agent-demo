@@ -1,7 +1,7 @@
 use ai_agent::llm::chat_schema::chat_schema;
 use ai_agent::state::GEMMA;
 
-use tracing::{Level};
+use tracing::Level;
 use tracing_subscriber::FmtSubscriber;
 
 #[tokio::main]

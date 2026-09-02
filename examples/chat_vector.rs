@@ -1,19 +1,19 @@
-use std::time::Duration;
-use serde::Serialize;
-use tavily::{SearchRequest, Tavily};
-use tiktoken_rs::cl100k_base;
-use tracing::{info, Level};
-use tracing_subscriber::FmtSubscriber;
 use ai_agent::modals::web_search::Topic;
 use ai_agent::state::TEXT_EMBEDDING_3_SMALL_MODEL;
 use ai_agent::tools::vector::chunk::chunk_handle;
 use ai_agent::tools::vector::search::vector_search;
+use serde::Serialize;
+use std::time::Duration;
+use tavily::{SearchRequest, Tavily};
+use tiktoken_rs::cl100k_base;
+use tracing::{Level, info};
+use tracing_subscriber::FmtSubscriber;
 
 #[derive(Debug, Serialize)]
 struct TavilySearch {
     query: String,
     topic: String,
-    max_result: i32
+    max_result: i32,
 }
 
 #[tokio::main]
@@ -38,8 +38,12 @@ async fn main() -> anyhow::Result<()> {
         .max_results(10);
 
     let search_result = tavily.call(&request).await?;
-    let contents = search_result.results
-        .into_iter().map(|data| data.content).collect::<Vec<_>>().join("\n\n");
+    let contents = search_result
+        .results
+        .into_iter()
+        .map(|data| data.content)
+        .collect::<Vec<_>>()
+        .join("\n\n");
 
     let core_bpe = cl100k_base()?;
     let token = core_bpe.encode_with_special_tokens(&contents).len();
@@ -48,9 +52,14 @@ async fn main() -> anyhow::Result<()> {
     let chunks = chunk_handle(&contents, 100, 10);
     let vector_search_result = vector_search(question, &chunks, 5).await?;
     info!("vector_search_result: {:?}", vector_search_result);
-    let vector_search_result_string = vector_search_result.into_iter()
-        .map(|data| format!("{:?}", data)).collect::<Vec<_>>().join("\n\n");
-    let new_token = core_bpe.encode_with_special_tokens(&vector_search_result_string).len();
+    let vector_search_result_string = vector_search_result
+        .into_iter()
+        .map(|data| format!("{:?}", data))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let new_token = core_bpe
+        .encode_with_special_tokens(&vector_search_result_string)
+        .len();
     info!("new_token: {}", new_token);
     Ok(())
 }

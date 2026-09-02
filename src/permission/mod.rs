@@ -1,19 +1,13 @@
+use crate::modals::permission_input::{
+    PermissionEntry, PermissionInput, PermissionMode, PermissionResult,
+};
+use crate::modals::tool::ToolView;
 use std::collections::{HashMap, VecDeque};
 use std::time::Duration;
-use tokio::io::{stdin, stdout, AsyncBufReadExt, AsyncWriteExt, BufReader, Lines, Stdin};
 use tokio::sync::oneshot;
 use tokio::sync::oneshot::Sender;
 use tokio::time::timeout;
-use tracing::info;
-
-#[derive(serde::Deserialize, serde::Serialize, Debug, Clone, PartialEq)]
-pub enum PermissionResult {
-    GrantedOnce,
-    GrantedAlways,
-    Denied,
-    Timeout,
-    NoInput,
-}
+use tracing::{error, info};
 
 #[derive(Debug, PartialEq)]
 enum PermissionQueueState {
@@ -21,37 +15,45 @@ enum PermissionQueueState {
     Working,
 }
 
-/// 队列中的一项:key 与它归属的工具绑定,避免不同工具的 key 互相套用授权结果
-#[derive(Debug)]
-struct PermissionEntry {
-    key: String,
-    tool_name: String,
-}
-
 pub struct Permission {
     queue: VecDeque<PermissionEntry>,
     state: PermissionQueueState,
-    duration: Duration,
-    lines: Lines<BufReader<Stdin>>,
+    input: Box<dyn PermissionInput>,
     map: HashMap<String, PermissionResult>,
     waits: HashMap<String, Vec<Sender<PermissionResult>>>,
 }
 
 impl Permission {
-    pub fn new(duration: Duration) -> Self {
-        let reader = BufReader::new(stdin());
-        let lines = reader.lines();
+    pub fn new(input: Box<dyn PermissionInput>) -> Self {
         Permission {
             queue: VecDeque::new(),
             state: PermissionQueueState::Empty,
-            duration,
-            lines,
+            input,
             map: HashMap::new(),
             waits: HashMap::new(),
         }
     }
 
-    pub async fn query(&mut self, key: String, tool_name: String) -> PermissionResult {
+    pub fn reset(&mut self) -> &mut Self {
+        self.state = PermissionQueueState::Empty;
+        self.queue = VecDeque::new();
+        self.map = HashMap::new();
+        self.waits = HashMap::new();
+        self
+    }
+
+    pub async fn query(&mut self, tool_view: &ToolView) -> PermissionResult {
+        if self.input.mode() == PermissionMode::AutoApprove {
+            return PermissionResult::GrantedAlways;
+        }
+        if self.input.mode() == PermissionMode::AutoDeny {
+            return PermissionResult::Denied;
+        }
+
+        let key = format!(
+            "id: {}, tool name: {}, arguments: {}",
+            tool_view.tool_call_id, tool_view.name, tool_view.arguments
+        );
         // 1) key 级历史决定:Denied/GrantedAlways 直接复用;Once/Timeout/NoInput 失效后移除,重试时重新询问
         if let Some(result) = self.map.get(&key) {
             match result {
@@ -65,7 +67,7 @@ impl Permission {
         }
 
         // 2) 工具级 always 授权,直接放行,无需排队
-        if self.map.get(&tool_name) == Some(&PermissionResult::GrantedAlways) {
+        if self.map.get(&tool_view.name) == Some(&PermissionResult::GrantedAlways) {
             return PermissionResult::GrantedAlways;
         }
 
@@ -73,7 +75,7 @@ impl Permission {
         if !self.queue.iter().any(|entry| entry.key == key) {
             self.queue.push_back(PermissionEntry {
                 key: key.clone(),
-                tool_name,
+                tool_view: tool_view.clone(),
             });
         }
 
@@ -114,31 +116,34 @@ impl Permission {
 
         while let Some(entry) = self.queue.pop_front() {
             // 按“这个 key 自己的工具”判断 always 授权,而不是按调用方工具
-            if self.map.get(&entry.tool_name) == Some(&PermissionResult::GrantedAlways) {
-                info!("用户已授权工具{}使用", entry.tool_name);
+            if self.map.get(&entry.tool_view.name) == Some(&PermissionResult::GrantedAlways) {
+                info!("用户已授权工具{}使用", entry.tool_view.name);
                 self.sender(entry.key, PermissionResult::GrantedAlways);
                 continue; // 继续消费队列,而不是 return
             }
 
-            println!("是否允许执行工具{}： 允许一次/允许该工具所有操作/拒绝： y/a/n", entry.tool_name);
-            stdout().flush().await.unwrap();
-
-            let status = match timeout(self.duration, self.lines.next_line()).await {
-                Ok(Ok(Some(line))) => match line.trim().to_ascii_lowercase().as_str() {
-                    "y" => PermissionResult::GrantedOnce,
-                    "a" => {
-                        self.map
-                            .insert(entry.tool_name.clone(), PermissionResult::GrantedAlways);
-                        PermissionResult::GrantedAlways
+            let duration = Duration::from_secs(entry.tool_view.config.permission_timeout);
+            let result = match timeout(duration, self.input.ask(&entry)).await {
+                Ok(result) => {
+                    if result == PermissionResult::GrantedAlways {
+                        self.map.insert(
+                            entry.tool_view.name.clone(),
+                            PermissionResult::GrantedAlways,
+                        );
                     }
-                    "n" => PermissionResult::Denied,
-                    _ => PermissionResult::NoInput,
-                },
-                _ => PermissionResult::Timeout,
+                    result
+                }
+                Err(_) => {
+                    error!(
+                        "tool permission ask timeout; tool name: {}, arguments: {}",
+                        entry.tool_view.name, entry.tool_view.arguments
+                    );
+                    PermissionResult::Timeout
+                }
             };
 
-            self.map.insert(entry.key.clone(), status.clone());
-            self.sender(entry.key, status);
+            self.map.insert(entry.key.clone(), result.clone());
+            self.sender(entry.key, result);
         }
 
         self.state = PermissionQueueState::Empty;

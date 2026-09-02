@@ -3,14 +3,14 @@ pub fn chunk_handle(text: &str, chunk_size: usize, chunk_overlap: usize) -> Vec<
         return vec![];
     }
     let chars = text.chars().collect::<Vec<char>>();
-    
+
     if chars.is_empty() {
         return vec![];
     }
-    
+
     let mut result = vec![];
     let mut start_index = 0;
-    
+
     while start_index < chars.len() {
         let end = (start_index + chunk_size).min(chars.len());
         let chunk = chars[start_index..end].iter().collect::<String>();
@@ -25,7 +25,6 @@ pub fn chunk_handle(text: &str, chunk_size: usize, chunk_overlap: usize) -> Vec<
 
     result
 }
-
 
 #[cfg(test)]
 mod tests {

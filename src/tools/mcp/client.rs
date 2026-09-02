@@ -1,31 +1,24 @@
-use rmcp::service::RunningService;
-use rmcp::{RoleClient, ServiceExt};
 use rmcp::model::{CallToolRequestParams, Tool};
+use rmcp::service::RunningService;
 use rmcp::transport::{ConfigureCommandExt, TokioChildProcess};
+use rmcp::{RoleClient, ServiceExt};
 use tokio::process::Command;
 use tracing::info;
 
 pub struct McpClient {
-    service: RunningService<RoleClient, ()>
+    service: RunningService<RoleClient, ()>,
 }
 
 impl McpClient {
     pub async fn connect() -> anyhow::Result<Self> {
-        let service = ().serve(
-            TokioChildProcess::new(
-                Command::new("cargo")
-                    .configure(
-                        |cmd| {
-                            cmd.args(["run", "--bin", "expense_mcp_server"]);
-                        }
-                    )
-            )?
-        ).await?;
-        Ok(
-            Self {
-                service
-            }
-        )
+        let service = ()
+            .serve(TokioChildProcess::new(Command::new("cargo").configure(
+                |cmd| {
+                    cmd.args(["run", "--bin", "expense_mcp_server"]);
+                },
+            ))?)
+            .await?;
+        Ok(Self { service })
     }
 
     pub async fn list_tools(&self) -> anyhow::Result<Vec<Tool>> {
@@ -33,7 +26,11 @@ impl McpClient {
         Ok(result.tools)
     }
 
-    pub async fn call_tool(&self, name: &str, arguments: serde_json::Value) -> anyhow::Result<String> {
+    pub async fn call_tool(
+        &self,
+        name: &str,
+        arguments: serde_json::Value,
+    ) -> anyhow::Result<String> {
         let params = CallToolRequestParams::new(name.to_string())
             .with_arguments(arguments.as_object().cloned().unwrap_or_default());
         let result = self.service.call_tool(params).await?;

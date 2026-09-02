@@ -1,7 +1,7 @@
-use std::sync::Arc;
-use serde_json::Value;
 use crate::tools::mcp::client::McpClient;
 use crate::tools::tool::Tool;
+use serde_json::Value;
+use std::sync::Arc;
 
 pub struct McpTool {
     client: Arc<McpClient>,
@@ -11,13 +11,13 @@ pub struct McpTool {
 }
 
 impl McpTool {
-    pub fn new(client: Arc<McpClient>, tool: rmcp::model::Tool ) -> Self {
+    pub fn new(client: Arc<McpClient>, tool: rmcp::model::Tool) -> Self {
         let parameters = Value::Object((*tool.input_schema).clone());
         Self {
             client,
             name: tool.name.to_string(),
             description: tool.description.map(|s| s.to_string()).unwrap_or_default(),
-            parameters
+            parameters,
         }
     }
 }
@@ -36,9 +36,8 @@ impl Tool for McpTool {
         self.parameters.clone()
     }
 
-    async fn execute(&self, args: &str) -> anyhow::Result<String> {
+    async fn execute(&mut self, args: &str) -> anyhow::Result<String> {
         let args = serde_json::from_str(args)?;
         self.client.call_tool(&self.name, args).await
     }
-    
 }

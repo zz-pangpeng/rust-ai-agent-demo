@@ -1,8 +1,8 @@
-use backon::{Retryable, ExponentialBuilder};
-use tracing::{Level};
-use tracing_subscriber::FmtSubscriber;
 use ai_agent::llm::chat_tool_calculator::chat_tool_calculator;
 use ai_agent::state::GPT_OSS_20B;
+use backon::{ExponentialBuilder, Retryable};
+use tracing::Level;
+use tracing_subscriber::FmtSubscriber;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -24,15 +24,15 @@ async fn main() -> anyhow::Result<()> {
 
     let question = vec![
         "1 + 10等于多少",
-        "2026年美加墨世界杯决赛是哪个国家对哪个国家，谁赢，谁进球"
+        "2026年美加墨世界杯决赛是哪个国家对哪个国家，谁赢，谁进球",
     ];
     let mut thread_handles = vec![];
     for prompt in question {
-        thread_handles.push(tokio::spawn( async move  {
-            let op = || async move {
-                chat_tool_calculator(GPT_OSS_20B, system, prompt).await
-            };
-            op.retry(ExponentialBuilder::default().with_max_times(3)).await.expect("TODO: panic message");
+        thread_handles.push(tokio::spawn(async move {
+            let op = || async move { chat_tool_calculator(GPT_OSS_20B, system, prompt).await };
+            op.retry(ExponentialBuilder::default().with_max_times(3))
+                .await
+                .expect("TODO: panic message");
         }))
     }
 

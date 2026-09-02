@@ -1,9 +1,16 @@
 use anyhow::anyhow;
-use async_openai::{Client};
-use async_openai::types::chat::{ChatCompletionRequestSystemMessageArgs, ChatCompletionRequestUserMessageArgs, CreateChatCompletionRequestArgs};
+use async_openai::Client;
+use async_openai::types::chat::{
+    ChatCompletionRequestSystemMessageArgs, ChatCompletionRequestUserMessageArgs,
+    CreateChatCompletionRequestArgs,
+};
 use tracing::info;
 
-pub async fn chat_message (model: &str, system: Option<&str>, prompt: &str) -> anyhow::Result<String> {
+pub async fn chat_message(
+    model: &str,
+    system: Option<&str>,
+    prompt: &str,
+) -> anyhow::Result<String> {
     let client = Client::new();
 
     let mut message = vec![];
@@ -12,7 +19,7 @@ pub async fn chat_message (model: &str, system: Option<&str>, prompt: &str) -> a
             ChatCompletionRequestSystemMessageArgs::default()
                 .content(system)
                 .build()?
-                .into()
+                .into(),
         );
     }
 
@@ -20,7 +27,7 @@ pub async fn chat_message (model: &str, system: Option<&str>, prompt: &str) -> a
         ChatCompletionRequestUserMessageArgs::default()
             .content(prompt)
             .build()?
-            .into()
+            .into(),
     );
 
     let request = CreateChatCompletionRequestArgs::default()
@@ -29,8 +36,13 @@ pub async fn chat_message (model: &str, system: Option<&str>, prompt: &str) -> a
         .max_tokens(1024_u16)
         .build()?;
     let response = client.chat().create(request).await?;
-    
-    let response = response.choices.into_iter().next().and_then(|choices| choices.message.content).ok_or_else(|| anyhow!("no message"))?;
+
+    let response = response
+        .choices
+        .into_iter()
+        .next()
+        .and_then(|choices| choices.message.content)
+        .ok_or_else(|| anyhow!("no message"))?;
     info!("{:?}", response);
 
     Ok(response)

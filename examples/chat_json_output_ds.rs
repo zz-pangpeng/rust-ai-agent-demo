@@ -1,7 +1,6 @@
 use ai_agent::llm::chat_json_output_ds::chat_json_output_ds;
 
-
-use tracing::{Level};
+use tracing::Level;
 use tracing_subscriber::FmtSubscriber;
 
 #[tokio::main]

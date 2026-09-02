@@ -1,9 +1,9 @@
-use chrono::Local;
-use tracing::{info, Level};
-use tracing_subscriber::FmtSubscriber;
 use ai_agent::agent::runtime::Agent;
 use ai_agent::state::DEEPSEEK_V4_FLASH;
 use ai_agent::tools::tool::get_tools;
+use chrono::Local;
+use tracing::{Level, info};
+use tracing_subscriber::FmtSubscriber;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -34,8 +34,8 @@ async fn main() -> anyhow::Result<()> {
     let question = r#"
         - 1234 * 4321等于多少
         - 2026年美加墨世界杯最佳射手
-    "#.to_string();
-
+    "#
+    .to_string();
 
     let result = agent.run(question).await?;
 

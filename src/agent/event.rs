@@ -1,4 +1,4 @@
-use chrono::{Utc};
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -6,15 +6,12 @@ use serde_json::Value;
 #[serde(tag = "type")]
 pub enum ContentItem {
     #[serde(rename = "message")]
-    Message {
-        role: String,
-        content: String,
-    },
+    Message { role: String, content: String },
     #[serde(rename = "tool_call")]
     ToolCall {
         tool_call_id: String,
         name: String,
-        arguments: Value
+        arguments: Value,
     },
     #[serde(rename = "tool_result")]
     ToolCallResult {
@@ -22,14 +19,14 @@ pub enum ContentItem {
         name: String,
         status: ToolCallStatus,
         content: String,
-    }
+    },
 }
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolCallStatus {
     Success,
     Failure,
-    Denied
+    Denied,
 }
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Event {
@@ -42,7 +39,11 @@ pub struct Event {
 }
 
 impl Event {
-    pub fn new(execution_id: impl Into<String>, author: impl Into<String>, content: Vec<ContentItem>) -> Self {
+    pub fn new(
+        execution_id: impl Into<String>,
+        author: impl Into<String>,
+        content: Vec<ContentItem>,
+    ) -> Self {
         Self {
             id: uuid::Uuid::new_v4().to_string(),
             execution_id: execution_id.into(),

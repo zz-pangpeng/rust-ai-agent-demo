@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 pub enum Topic {
     General,
     News,
-    Finance
+    Finance,
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]
