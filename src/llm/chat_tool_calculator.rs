@@ -1,4 +1,5 @@
-use crate::tools::tool::get_tools;
+use crate::tools::calculator::CalculatorTool;
+use crate::tools::tool::Tool;
 use anyhow::anyhow;
 use async_openai::Client;
 use async_openai::types::chat::{
@@ -6,6 +7,7 @@ use async_openai::types::chat::{
     ChatCompletionRequestSystemMessageArgs, ChatCompletionRequestToolMessageArgs,
     ChatCompletionRequestUserMessageArgs, CreateChatCompletionRequestArgs,
 };
+use std::collections::HashMap;
 use tracing::{error, info};
 
 pub async fn chat_tool_calculator(
@@ -24,13 +26,17 @@ pub async fn chat_tool_calculator(
             .build()?
             .into(),
     ];
-    let (tools, mut tools_map) = get_tools().await?;
+
+    let tool = CalculatorTool {};
+    let chat_tools = tool.definition()?;
+    let mut tools_map: HashMap<String, Box<dyn Tool>> = HashMap::new();
+    tools_map.insert(tool.name().to_string(), Box::new(tool));
 
     loop {
         let request = CreateChatCompletionRequestArgs::default()
             .model(model)
             .messages(messages.clone())
-            .tools(tools.clone())
+            .tools(vec![chat_tools.clone()])
             .build()?
             .into();
         let response = client.chat().create(request).await?;

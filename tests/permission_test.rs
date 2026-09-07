@@ -103,7 +103,7 @@ mod tests {
         permission_input.mode = PermissionMode::AutoApprove;
 
         let tool_view = tool_view("1", "search", "1");
-        let mut permission = Permission::new(Box::new(permission_input));
+        let permission = Permission::new(Box::new(permission_input));
 
         assert_eq!(
             permission.query(&tool_view).await,
@@ -132,7 +132,7 @@ mod tests {
         permission_input.mode = PermissionMode::AutoDeny;
 
         let tool_view = tool_view("1", "search", "1");
-        let mut permission = Permission::new(Box::new(permission_input));
+        let permission = Permission::new(Box::new(permission_input));
 
         assert_eq!(permission.query(&tool_view).await, PermissionResult::Denied);
         assert_eq!(logs.lock().await.len(), 0);
@@ -143,7 +143,7 @@ mod tests {
         let logs = Arc::new(Mutex::new(Vec::new()));
         let result = vec![PermissionResult::GrantedAlways];
         let script_permission_input = ScriptPermissionInput::new(result, logs.clone());
-        let mut permission = Permission::new(Box::new(script_permission_input));
+        let permission = Permission::new(Box::new(script_permission_input));
         let tool_view = tool_view("1", "search", "a");
 
         assert_eq!(
@@ -163,7 +163,7 @@ mod tests {
         let logs = Arc::new(Mutex::new(Vec::new()));
         let result = vec![PermissionResult::GrantedOnce, PermissionResult::GrantedOnce];
         let script_permission_input = ScriptPermissionInput::new(result, logs.clone());
-        let mut permission = Permission::new(Box::new(script_permission_input));
+        let permission = Permission::new(Box::new(script_permission_input));
         let tool_view = tool_view("1", "search", "a");
 
         assert_eq!(
@@ -184,7 +184,7 @@ mod tests {
         let logs = Arc::new(Mutex::new(Vec::new()));
         let result = vec![PermissionResult::Denied];
         let script_permission_input = ScriptPermissionInput::new(result, logs.clone());
-        let mut permission = Permission::new(Box::new(script_permission_input));
+        let permission = Permission::new(Box::new(script_permission_input));
         let tool_view = tool_view("1", "search", "a");
 
         assert_eq!(permission.query(&tool_view).await, PermissionResult::Denied);
@@ -198,7 +198,7 @@ mod tests {
         let logs = Arc::new(Mutex::new(Vec::new()));
         let result = vec![PermissionResult::GrantedAlways];
         let script_permission_input = ScriptPermissionInput::new(result, logs.clone());
-        let mut permission = Permission::new(Box::new(script_permission_input));
+        let permission = Permission::new(Box::new(script_permission_input));
         let tool_view_search_a = tool_view("1", "search", "a");
         let tool_view_search_b = crate::tool_view("1", "search", "b");
 
@@ -217,7 +217,7 @@ mod tests {
     #[tokio::test]
     async fn timeout_test() {
         let permission_input = PendingPermissionInput {};
-        let mut permission = Permission::new(Box::new(permission_input));
+        let permission = Permission::new(Box::new(permission_input));
 
         let mut tool_view_search = crate::tool_view("1", "search", "a");
         tool_view_search.config.permission_timeout = 1;

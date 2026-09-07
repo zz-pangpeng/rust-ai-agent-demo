@@ -65,7 +65,7 @@ impl Tool for Search {
     async fn before_callback(
         &mut self,
         tool_view: &ToolView,
-        permission: &mut Permission,
+        permission: &Permission,
     ) -> Option<(ToolCallStatus, String)> {
         if !self.need_permission {
             return None;
@@ -79,28 +79,12 @@ impl Tool for Search {
     }
 }
 
-fn get_tool_config(
-    list: Vec<Box<dyn Tool>>,
-) -> (Vec<ChatCompletionTools>, HashMap<String, Box<dyn Tool>>) {
-    let mut tool_map: HashMap<String, Box<dyn Tool>> = HashMap::new();
-    let mut tool_list = Vec::new();
-    for tool in list {
-        if let Ok(chat_completion_tool) = tool.definition() {
-            tool_list.push(chat_completion_tool);
-            tool_map.insert(tool.name().to_string(), tool);
-        }
-    }
-    (tool_list, tool_map)
-}
-
 pub fn get_agent_bind_tool(
     llm_client_status: ModeChatClientStatus,
     search_status: SearchStatus,
     need_permission: bool,
 ) -> Agent {
     let mut agent = get_client(llm_client_status);
-    let (tool_list, tool_map) =
-        get_tool_config(vec![Box::new(Search::new(search_status, need_permission))]);
-    agent.bind_tool_calls(tool_list, tool_map);
+    agent.bind_tool_calls(vec![Box::new(Search::new(search_status, need_permission))]);
     agent
 }

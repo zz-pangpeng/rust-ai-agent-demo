@@ -1,15 +1,9 @@
 use crate::agent::event::ToolCallStatus;
 use crate::modals::tool::ToolView;
 use crate::permission::Permission;
-use crate::tools::calculator::CalculatorTool;
-use crate::tools::mcp::client::McpClient;
-use crate::tools::mcp::tool::McpTool;
 use crate::tools::output::{TOOL_EXECUTE_FAILURE, TOOL_EXECUTE_TIMEOUT};
-use crate::tools::web_search::WebSearch;
 use anyhow::anyhow;
 use async_openai::types::chat::{ChatCompletionTool, ChatCompletionTools, FunctionObjectArgs};
-use std::collections::HashMap;
-use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::timeout;
 use tracing::{debug, error, info};
@@ -38,9 +32,9 @@ pub trait Tool: Send + Sync {
         &mut self,
         args: &str,
         tool_view: &ToolView,
-        permission: &mut Permission,
+        permission: &Permission,
     ) -> (ToolCallStatus, String) {
-        match timeout(
+        timeout(
             Duration::from_secs(tool_view.config.tool_execute_timeout),
             async {
                 if let Some(result) = self.before_execute(&tool_view, permission).await {
@@ -67,16 +61,13 @@ pub trait Tool: Send + Sync {
             },
         )
         .await
-        {
-            Ok(result) => result,
-            Err(_) => (ToolCallStatus::Failure, TOOL_EXECUTE_TIMEOUT.to_string()),
-        }
+        .unwrap_or_else(|_| (ToolCallStatus::Failure, TOOL_EXECUTE_TIMEOUT.to_string()))
     }
 
     async fn before_callback(
         &mut self,
         _tool_view: &ToolView,
-        _permission: &mut Permission,
+        _permission: &Permission,
     ) -> Option<(ToolCallStatus, String)> {
         None
     }
@@ -84,21 +75,18 @@ pub trait Tool: Send + Sync {
     async fn before_execute(
         &mut self,
         tool_view: &ToolView,
-        permission: &mut Permission,
+        permission: &Permission,
     ) -> Option<(ToolCallStatus, String)> {
-        match timeout(
+        timeout(
             Duration::from_secs(tool_view.config.tool_callback_execute_timeout),
             self.before_callback(tool_view, permission),
         )
         .await
-        {
-            Ok(result) => result,
-            Err(_) => {
-                let text = "tool before_callback execute timeout";
-                info!("{text}");
-                Some((ToolCallStatus::Failure, text.to_string()))
-            }
-        }
+        .unwrap_or_else(|_| {
+            let text = "tool before_callback execute timeout";
+            info!("{text}");
+            Some((ToolCallStatus::Failure, text.to_string()))
+        })
     }
 
     async fn after_callback(&mut self, _tool_view: &ToolView, result: String) -> String {
@@ -119,25 +107,4 @@ pub trait Tool: Send + Sync {
             }
         }
     }
-}
-
-pub async fn get_tools()
--> anyhow::Result<(Vec<ChatCompletionTools>, HashMap<String, Box<dyn Tool>>)> {
-    let mut tools: Vec<Box<dyn Tool>> = vec![Box::new(CalculatorTool), Box::new(WebSearch)];
-
-    let mcp_client = Arc::new(McpClient::connect().await?);
-    for tool in mcp_client.list_tools().await? {
-        tools.push(Box::new(McpTool::new(mcp_client.clone(), tool)));
-    }
-
-    let mut chat_completion_tools = vec![];
-    let mut tools_map = HashMap::new();
-    for tool in tools {
-        if let Ok(chat_completion_tool) = tool.definition() {
-            chat_completion_tools.push(chat_completion_tool);
-            tools_map.insert(tool.name().to_string(), *Box::new(tool));
-        }
-    }
-
-    Ok((chat_completion_tools, tools_map))
 }

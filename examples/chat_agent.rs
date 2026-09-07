@@ -1,6 +1,8 @@
 use ai_agent::agent::runtime::Agent;
 use ai_agent::state::DEEPSEEK_V4_FLASH;
-use ai_agent::tools::tool::get_tools;
+use ai_agent::tools::calculator::CalculatorTool;
+use ai_agent::tools::tool::Tool;
+use ai_agent::tools::web_search::WebSearch;
 use chrono::Local;
 use tracing::{Level, info};
 use tracing_subscriber::FmtSubscriber;
@@ -28,8 +30,8 @@ async fn main() -> anyhow::Result<()> {
     );
 
     let mut agent = Agent::new(DEEPSEEK_V4_FLASH, Some(system));
-    let (tools, tools_map) = get_tools().await?;
-    agent.bind_tool_calls(tools, tools_map).set_max_steps(10);
+    let tools: Vec<Box<dyn Tool>> = vec![Box::new(CalculatorTool), Box::new(WebSearch)];
+    agent.bind_tool_calls(tools).set_max_steps(10);
 
     let question = r#"
         - 1234 * 4321等于多少

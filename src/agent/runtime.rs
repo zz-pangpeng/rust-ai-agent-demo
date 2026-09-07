@@ -19,10 +19,13 @@ use async_openai::types::chat::{
     FunctionCall,
 };
 use backon::{ExponentialBuilder, Retryable};
+use futures::future::join_all;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::Mutex;
 use tokio::time::timeout;
 use tracing::{Instrument, Level, debug, error, span};
 
@@ -30,10 +33,10 @@ pub struct Agent {
     model: String,
     system_instruction: Option<String>,
     max_steps: usize,
-    tool_box_map: HashMap<String, Box<dyn Tool>>,
+    tool_box_map: HashMap<String, Arc<Mutex<Box<dyn Tool>>>>,
     tool_box: Vec<ChatCompletionTools>,
     chat_client: Box<dyn ChatClient>,
-    context: Context,
+    context: Arc<Mutex<Context>>,
     config: AgentConfig,
     permission: Permission,
 }
@@ -62,19 +65,20 @@ impl Agent {
             tool_box: Vec::new(),
             tool_box_map: HashMap::new(),
             chat_client: Box::new(RealChatClient::new()),
-            context: Context::new(),
+            context: Arc::new(Mutex::new(Context::new())),
             config: config.clone(),
             permission: Permission::new(permission_input),
         }
     }
 
-    pub fn bind_tool_calls(
-        &mut self,
-        tool_box: Vec<ChatCompletionTools>,
-        tool_box_map: HashMap<String, Box<dyn Tool>>,
-    ) -> &mut Self {
-        self.tool_box = tool_box;
-        self.tool_box_map = tool_box_map;
+    pub fn bind_tool_calls(&mut self, tool_list: Vec<Box<dyn Tool>>) -> &mut Self {
+        for tool in tool_list {
+            if let Ok(chat_tool) = tool.definition() {
+                self.tool_box.push(chat_tool);
+                self.tool_box_map
+                    .insert(tool.name().to_string(), Arc::new(Mutex::new(tool)));
+            }
+        }
         self
     }
 
@@ -103,7 +107,7 @@ impl Agent {
         self
     }
 
-    pub fn build_message(&self) -> anyhow::Result<Vec<ChatCompletionRequestMessage>> {
+    pub async fn build_message(&self) -> anyhow::Result<Vec<ChatCompletionRequestMessage>> {
         let mut messages = Vec::new();
 
         if let Some(system_instruction) = &self.system_instruction {
@@ -114,8 +118,8 @@ impl Agent {
                     .into(),
             );
         }
-
-        for event in &self.context.event {
+        let context = self.context.lock().await;
+        for event in &context.event {
             for content_item in &event.content {
                 match content_item {
                     ContentItem::Message { role, content } => {
@@ -180,31 +184,33 @@ impl Agent {
     }
 
     pub async fn run(&mut self, prompt: String) -> anyhow::Result<AgentResult> {
-        self.context = Context::new();
+        self.permission.reset().await;
+        let mut context = Context::new();
         let event = Event::new(
-            self.context.execution_id.clone(),
+            context.execution_id.clone(),
             "user",
             vec![ContentItem::Message {
                 role: "user".to_string(),
                 content: prompt.clone(),
             }],
         );
-        self.context.add_event(event);
+        context.add_event(event);
         let mut result = AgentResult {
             input: prompt.clone(),
             output: "".to_string(),
-            context: self.context.clone(),
+            context: context.clone(),
         };
-
-        self.permission.reset();
-
+        self.context = Arc::new(Mutex::new(context));
         loop {
-            if self.context.current_step >= self.max_steps {
-                result.output = OUT_MAX_STEPS.to_string();
-                result.context = self.context.clone();
-                return Ok(result);
+            {
+                let context = self.context.lock().await;
+                if context.current_step >= self.max_steps {
+                    result.output = OUT_MAX_STEPS.to_string();
+                    result.context = context.clone();
+                    return Ok(result);
+                }
             }
-            let messages = self.build_message()?;
+            let messages = self.build_message().await?;
             let request = CreateChatCompletionRequestArgs::default()
                 .messages(messages)
                 .model(&self.model)
@@ -235,19 +241,38 @@ impl Agent {
             debug!("message: {:?}", message);
 
             if let Some(tool_calls) = message.tool_calls {
-                self.add_tool_call(&tool_calls);
-                self.tool_execute(&tool_calls).await;
-                self.context.increment_step();
+                let add_tool_call_result = self.add_tool_call(&tool_calls);
+                let tool_execute_result = self.tool_execute(&tool_calls).await;
+
+                let mut context = self.context.lock().await;
+                let id = context.execution_id.clone();
+                context.add_event(Event::new(
+                    id.clone(),
+                    add_tool_call_result.0,
+                    add_tool_call_result.1,
+                ));
+                tool_execute_result
+                    .into_iter()
+                    .for_each(|(author, content)| {
+                        if !content.is_empty() {
+                            context.add_event(Event::new(id.clone(), author, content));
+                        }
+                    });
+                context.increment_step();
             } else {
+                let context = self.context.lock().await;
                 let output = message.content.ok_or_else(|| anyhow!(NOT_OUTPUT))?;
                 result.output = output;
-                result.context = self.context.clone();
+                result.context = context.clone();
                 return Ok(result);
             }
         }
     }
 
-    pub fn add_tool_call(&mut self, tool_calls: &Vec<ChatCompletionMessageToolCalls>) {
+    pub fn add_tool_call(
+        &self,
+        tool_calls: &Vec<ChatCompletionMessageToolCalls>,
+    ) -> (&str, Vec<ContentItem>) {
         let mut content = vec![];
         for tool_call in tool_calls {
             if let ChatCompletionMessageToolCalls::Function(tool) = tool_call {
@@ -262,58 +287,63 @@ impl Agent {
                 });
             }
         }
-        let event = Event::new(self.context.execution_id.clone(), "assistant", content);
-        self.context.add_event(event);
+        ("assistant", content)
     }
 
-    pub async fn tool_execute(&mut self, tool_calls: &Vec<ChatCompletionMessageToolCalls>) {
-        for tool_call in tool_calls {
-            if let ChatCompletionMessageToolCalls::Function(tool) = tool_call {
-                let name = tool.function.name.clone();
-                let args = tool.function.arguments.clone();
-                let span = span!(Level::INFO, "tool call", name = name, id = tool.id.clone());
-                let tool_view = ToolView {
-                    tool_call_id: tool.id.clone(),
-                    name: name.clone(),
-                    arguments: args.clone(),
-                    model: self.model.clone(),
-                    config: self.config.clone(),
-                };
+    pub async fn tool_execute(
+        &self,
+        tool_calls: &Vec<ChatCompletionMessageToolCalls>,
+    ) -> Vec<(&str, Vec<ContentItem>)> {
+        let futures = tool_calls
+            .iter()
+            .map(|call| async move { self.tool_item_execute(call).await });
+        join_all(futures).await
+    }
+    async fn tool_item_execute(
+        &self,
+        tool_call: &ChatCompletionMessageToolCalls,
+    ) -> (&str, Vec<ContentItem>) {
+        if let ChatCompletionMessageToolCalls::Function(tool) = tool_call {
+            let name = tool.function.name.clone();
+            let args = tool.function.arguments.clone();
+            let span = span!(Level::INFO, "tool call", name = name, id = tool.id.clone());
+            let tool_view = ToolView {
+                tool_call_id: tool.id.clone(),
+                name: name.clone(),
+                arguments: args.clone(),
+                model: self.model.clone(),
+                config: self.config.clone(),
+            };
 
-                let (status, content) = async {
-                    match self.tool_box_map.get_mut(&name) {
-                        Some(tool) => {
-                            tool.execute_with_timeout(
-                                args.as_str(),
-                                &tool_view,
-                                &mut self.permission,
-                            )
+            let (status, content) = async {
+                match self.tool_box_map.get(&name) {
+                    Some(tool) => {
+                        tool.lock()
                             .await
-                        }
-                        None => {
-                            error!("tool not found");
-                            (
-                                ToolCallStatus::Failure,
-                                format!("{}: {}", TOOL_NOT_FOUND, name.clone()),
-                            )
-                        }
+                            .execute_with_timeout(args.as_str(), &tool_view, &self.permission)
+                            .await
+                    }
+                    None => {
+                        error!("tool not found");
+                        (
+                            ToolCallStatus::Failure,
+                            format!("{}: {}", TOOL_NOT_FOUND, name.clone()),
+                        )
                     }
                 }
-                .instrument(span)
-                .await;
-
-                let event = Event::new(
-                    self.context.execution_id.clone(),
-                    "tool_calls",
-                    vec![ContentItem::ToolCallResult {
-                        tool_call_id: tool.id.clone(),
-                        name,
-                        status,
-                        content,
-                    }],
-                );
-                self.context.add_event(event);
             }
+            .instrument(span)
+            .await;
+            return (
+                "tool_calls",
+                vec![ContentItem::ToolCallResult {
+                    tool_call_id: tool.id.clone(),
+                    name,
+                    status,
+                    content,
+                }],
+            );
         }
+        ("tool_calls", vec![])
     }
 }

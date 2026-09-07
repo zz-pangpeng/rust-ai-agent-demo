@@ -57,7 +57,7 @@ impl Tool for WebSearch {
     async fn before_callback(
         &mut self,
         tool_view: &ToolView,
-        permission: &mut Permission,
+        permission: &Permission,
     ) -> Option<(ToolCallStatus, String)> {
         if tool_view.name != self.name() {
             return None;
