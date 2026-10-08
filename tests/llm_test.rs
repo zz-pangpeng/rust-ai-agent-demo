@@ -4,7 +4,7 @@ mod common;
 mod tests {
     use crate::common::client::{ModeChatClientStatus, get_client};
     use ai_agent::agent::output::{NOT_OUTPUT, TIMEOUT};
-    use ai_agent::modals::config::AgentConfig;
+    use ai_agent::modals::config::SystemConfig;
 
     #[tokio::test]
     async fn llm_output_content_test() {
@@ -42,9 +42,9 @@ mod tests {
     async fn llm_timeout_test() {
         let mut agent = get_client(ModeChatClientStatus::Timeout);
 
-        let mut config = AgentConfig::new();
-        config.agent_execute_timeout = 1;
-        config.agent_execute_retry_count = 1;
+        let mut config = SystemConfig::new();
+        config.agent.execute_timeout = 1;
+        config.agent.execute_retry_count = 1;
         agent.bind_config(config);
 
         let result = agent.run("hello".to_string()).await;

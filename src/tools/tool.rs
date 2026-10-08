@@ -26,6 +26,10 @@ pub trait Tool: Send + Sync {
         }))
     }
 
+    fn compress_query(&self, _args: &str) -> Option<String> {
+        None
+    }
+
     async fn execute(&mut self, args: &str) -> anyhow::Result<String>;
 
     async fn execute_with_timeout(
@@ -35,7 +39,7 @@ pub trait Tool: Send + Sync {
         permission: &Permission,
     ) -> (ToolCallStatus, String) {
         timeout(
-            Duration::from_secs(tool_view.config.tool_execute_timeout),
+            Duration::from_secs(tool_view.config.tool.execute_timeout),
             async {
                 if let Some(result) = self.before_execute(&tool_view, permission).await {
                     info!("tool before callback: {:?}", result);
@@ -44,10 +48,7 @@ pub trait Tool: Send + Sync {
                     match self.execute(args).await {
                         Ok(result) => {
                             debug!("tool execute success: {}", result);
-                            let after_callback_result =
-                                self.after_execute(&tool_view, result).await;
-                            debug!("tool after callback result: {}", after_callback_result);
-                            (ToolCallStatus::Success, after_callback_result)
+                            (ToolCallStatus::Success, result)
                         }
                         Err(error) => {
                             error!("tool execute error: {}", error);
@@ -78,7 +79,7 @@ pub trait Tool: Send + Sync {
         permission: &Permission,
     ) -> Option<(ToolCallStatus, String)> {
         timeout(
-            Duration::from_secs(tool_view.config.tool_callback_execute_timeout),
+            Duration::from_secs(tool_view.config.tool.callback_execute_timeout),
             self.before_callback(tool_view, permission),
         )
         .await
@@ -87,24 +88,5 @@ pub trait Tool: Send + Sync {
             info!("{text}");
             Some((ToolCallStatus::Failure, text.to_string()))
         })
-    }
-
-    async fn after_callback(&mut self, _tool_view: &ToolView, result: String) -> String {
-        result
-    }
-
-    async fn after_execute(&mut self, tool_view: &ToolView, result: String) -> String {
-        match timeout(
-            Duration::from_secs(tool_view.config.tool_callback_execute_timeout),
-            self.after_callback(tool_view, result.clone()),
-        )
-        .await
-        {
-            Ok(after_callback_result) => after_callback_result,
-            Err(_) => {
-                info!("{} tool after_callback execute timeout", self.name());
-                result
-            }
-        }
     }
 }

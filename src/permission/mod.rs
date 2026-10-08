@@ -131,7 +131,7 @@ impl Permission {
                 continue; // 继续消费队列,而不是 return
             }
 
-            let duration = Duration::from_secs(entry.tool_view.config.permission_timeout);
+            let duration = Duration::from_secs(entry.tool_view.config.permission.execute_timeout);
             let result = match timeout(duration, permission_state.input.ask(&entry)).await {
                 Ok(result) => {
                     if result == PermissionResult::GrantedAlways {

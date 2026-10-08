@@ -6,7 +6,7 @@ mod test {
     use crate::common::client::{ModeChatClientStatus, get_client};
     use crate::common::search_tool::{SearchStatus, get_agent_bind_tool};
     use ai_agent::agent::output::{OUT_MAX_STEPS, TOOL_NOT_FOUND};
-    use ai_agent::modals::config::AgentConfig;
+    use ai_agent::modals::config::SystemConfig;
     use ai_agent::tools::output::{TOOL_EXECUTE_FAILURE, TOOL_EXECUTE_TIMEOUT};
     #[tokio::test]
     async fn tool_not_found_test() {
@@ -52,8 +52,8 @@ mod test {
             false,
         );
 
-        let mut config = AgentConfig::new();
-        config.tool_execute_timeout = 1;
+        let mut config = SystemConfig::new();
+        config.tool.execute_timeout = 1;
 
         agent.bind_config(config);
 
@@ -71,8 +71,8 @@ mod test {
             false,
         );
 
-        let mut config = AgentConfig::new();
-        config.tool_execute_timeout = 1;
+        let mut config = SystemConfig::new();
+        config.tool.execute_timeout = 1;
 
         agent.bind_config(config);
 

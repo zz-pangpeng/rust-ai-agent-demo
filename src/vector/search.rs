@@ -1,10 +1,9 @@
-use crate::state::TEXT_EMBEDDING_3_SMALL_MODEL;
-use crate::tools::vector::embed::embed;
+use crate::vector::embed::embed;
 use anyhow::anyhow;
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
-use tiktoken_rs::cl100k_base;
-use tracing::{error, info};
+use crate::modals::config::Vector;
+use crate::vector::chunk::chunk_handle;
 
 pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     let dot: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
@@ -48,35 +47,26 @@ pub struct SearchResult {
 }
 
 pub async fn vector_search(
-    text: &str,
-    chunks: &[String],
-    top: usize,
+    question: &str,
+    answer: &str,
+    config: &Vector
 ) -> anyhow::Result<Vec<SearchResult>> {
-    if text.is_empty() || chunks.is_empty() || top == 0 {
-        return Ok(chunks
-            .into_iter()
-            .enumerate()
-            .map(|(index, data)| {
-                return SearchResult {
-                    index,
-                    similarity: 1.0,
-                    content: data.clone(),
-                };
-            })
-            .collect());
+    let chunks = chunk_handle(answer, config.chunk_size, config.chunk_overlap);
+    if question.is_empty() || chunks.is_empty() || config.top_k == 0 {
+        return Ok(vec![]);
     }
-    let embed_text = embed(&vec![text.to_string()], TEXT_EMBEDDING_3_SMALL_MODEL)
+    let embed_text = embed(&vec![question.to_string()], &config.model)
         .await?
         .pop()
         .ok_or_else(|| anyhow!("no embed"))?;
-    let embed_chunks = embed(chunks, TEXT_EMBEDDING_3_SMALL_MODEL).await?;
+    let embed_chunks = embed(&chunks, &config.model).await?;
 
-    let mut heap = BinaryHeap::with_capacity(top + 1);
+    let mut heap = BinaryHeap::with_capacity(config.top_k + 1);
 
     for (index, chunk) in embed_chunks.iter().enumerate() {
         let similarity = cosine_similarity(&chunk, &embed_text);
         heap.push(Similarity { index, similarity });
-        if heap.len() > top {
+        if heap.len() > config.top_k {
             heap.pop();
         }
     }
@@ -93,35 +83,6 @@ pub async fn vector_search(
             };
         })
         .collect::<Vec<SearchResult>>();
-
-    let before_text = chunks
-        .iter()
-        .map(String::as_str)
-        .collect::<Vec<&str>>()
-        .join("");
-    let after_text = result
-        .iter()
-        .map(|data| data.content.as_str())
-        .collect::<Vec<&str>>()
-        .join("");
-    let core = cl100k_base();
-    match core {
-        Ok(core) => {
-            let before_token = core.encode_with_special_tokens(&before_text).len();
-            let after_token = core.encode_with_special_tokens(&after_text).len();
-            info!(
-                "向量搜索执行成功，向量搜索前后token比： {} / {}",
-                after_token, before_token
-            )
-        }
-        Err(_) => {
-            error!(
-                "向量搜索执行成功，但节省token初始化失败，向量搜索前后字符串长度比： {} / {}",
-                after_text.len(),
-                before_text.len()
-            );
-        }
-    }
 
     Ok(result)
 }

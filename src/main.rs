@@ -4,6 +4,8 @@ mod modals;
 mod permission;
 mod state;
 mod tools;
+mod token;
+mod vector;
 
 use crate::llm::chat_schema::chat_schema;
 use crate::state::GEMMA;

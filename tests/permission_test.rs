@@ -3,7 +3,7 @@ mod common;
 use crate::common::client::ModeChatClientStatus;
 use crate::common::search_tool::{SearchStatus, get_agent_bind_tool};
 use ai_agent::agent::runtime::Agent;
-use ai_agent::modals::config::AgentConfig;
+use ai_agent::modals::config::SystemConfig;
 use ai_agent::modals::permission_input::{
     PermissionEntry, PermissionInput, PermissionMode, PermissionResult,
 };
@@ -18,8 +18,8 @@ fn get_client(permission_mode: PermissionMode) -> Agent {
         SearchStatus::Success,
         true,
     );
-    let mut config = AgentConfig::new();
-    config.permission_mode = permission_mode;
+    let mut config = SystemConfig::new();
+    config.permission.mode = permission_mode;
     agent.bind_config(config);
     agent
 }
@@ -71,7 +71,7 @@ fn tool_view(id: &str, name: &str, args: &str) -> ToolView {
         name: name.to_string(),
         arguments: args.to_string(),
         model: "".to_string(),
-        config: AgentConfig::default(),
+        config: SystemConfig::default(),
     }
 }
 
@@ -220,7 +220,7 @@ mod tests {
         let permission = Permission::new(Box::new(permission_input));
 
         let mut tool_view_search = crate::tool_view("1", "search", "a");
-        tool_view_search.config.permission_timeout = 1;
+        tool_view_search.config.permission.execute_timeout = 1;
 
         assert_eq!(
             permission.query(&tool_view_search).await,

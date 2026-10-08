@@ -20,7 +20,7 @@ pub fn chunk_handle(text: &str, chunk_size: usize, chunk_overlap: usize) -> Vec<
         if end == chars.len() {
             break;
         }
-        start_index = end - chunk_overlap;
+        start_index = end.saturating_sub(chunk_overlap).max(start_index + 1);
     }
 
     result

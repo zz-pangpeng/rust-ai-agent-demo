@@ -1,7 +1,20 @@
-agent_max_steps = 10
-agent_execute_timeout = 180
-agent_execute_retry_count = 3
-tool_execute_timeout = 30
-tool_callback_execute_timeout = 10
-permission_timeout = 5
-permission_mode = "interactive"
+[agent]
+max_rounds = 10                             # 运行最大轮数
+execute_timeout = 180                       # 执行超时（秒）
+execute_retry_count = 3                     # 重试次数
+
+[tool]
+execute_timeout = 30                        # 单个工具执行超时（秒）
+callback_execute_timeout = 10               # 单个工具回调执行超时（秒）
+result_max_token = 1000                     # 单个工具输出结果最大token数（简单计算），超过将启用向量压缩
+
+[permission]
+execute_timeout = 5                         # 权限授权超时时间（秒）
+mode = "interactive"                        # 权限授权模式 interactive | auto_approve | auto_deny
+
+[vector]
+chunk_size = 100                            # chunk大小
+chunk_overlap = 20                          # chunk重复区域大小
+top_k = 5                                   # 匹配前几个
+model = "openai/text-embedding-3-small"     # 向量模型
+execute_timeout = 5                         # 执行超时（秒）

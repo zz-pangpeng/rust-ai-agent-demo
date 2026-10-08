@@ -5,11 +5,9 @@ use ai_agent::modals::tool::ToolView;
 use ai_agent::permission::Permission;
 use ai_agent::tools::output::TOOL_EXECUTE_FAILURE;
 use ai_agent::tools::tool::Tool;
-use async_openai::types::chat::ChatCompletionTools;
 use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
 
 #[derive(Deserialize, Serialize, JsonSchema)]
 struct SearchArguments {

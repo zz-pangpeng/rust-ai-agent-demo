@@ -2,7 +2,7 @@ use crate::agent::context::Context;
 use crate::agent::event::{ContentItem, Event, ToolCallStatus};
 use crate::agent::output::{NOT_OUTPUT, OUT_MAX_STEPS, TIMEOUT, TOOL_NOT_FOUND};
 use crate::modals::chat_client::{ChatClient, RealChatClient};
-use crate::modals::config::AgentConfig;
+use crate::modals::config::SystemConfig;
 use crate::modals::permission_input::{
     DeniedPermissionInput, GrantedAlwaysPermissionInput, PermissionInput, PermissionMode,
     StdinPermissionInput,
@@ -27,18 +27,23 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
 use tokio::time::timeout;
-use tracing::{Instrument, Level, debug, error, span};
+use tracing::{Instrument, Level, debug, error, span, warn};
+use crate::state::DEEPSEEK_V4_FLASH;
+use crate::token::manager::TokenManager;
+use crate::vector::compress::compress;
 
 pub struct Agent {
     model: String,
     system_instruction: Option<String>,
+    user_instruction: String,
     max_steps: usize,
     tool_box_map: HashMap<String, Arc<Mutex<Box<dyn Tool>>>>,
     tool_box: Vec<ChatCompletionTools>,
     chat_client: Box<dyn ChatClient>,
     context: Arc<Mutex<Context>>,
-    config: AgentConfig,
+    config: SystemConfig,
     permission: Permission,
+    token_manager: TokenManager
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -54,20 +59,33 @@ fn get_permission_input(permission_mode: &PermissionMode) -> Box<dyn PermissionI
         PermissionMode::AutoApprove => Box::new(GrantedAlwaysPermissionInput {}),
     }
 }
+
+fn get_max_tokens(model: &str) -> u64 {
+    match model {
+        DEEPSEEK_V4_FLASH => 128 * 1024,
+        _ => 64 * 1024
+    }
+}
 impl Agent {
     pub fn new(model: impl Into<String>, system_instruction: Option<impl Into<String>>) -> Self {
-        let config = AgentConfig::new();
-        let permission_input = get_permission_input(&config.permission_mode);
+        let config = SystemConfig::new();
+        let permission_input = get_permission_input(&config.permission.mode);
+        let model = model.into();
+        let max_tokens = get_max_tokens(model.as_str());
+        let reserve_ratio = 1.0 - config.compression.trigger_threshold_ratio;
+        let reserve_budget= max_tokens  * reserve_ratio as u64;
         Self {
-            model: model.into(),
+            model,
             system_instruction: system_instruction.map(Into::into),
-            max_steps: config.agent_max_steps,
+            user_instruction: "".to_string(),
+            max_steps: config.agent.max_rounds,
             tool_box: Vec::new(),
             tool_box_map: HashMap::new(),
             chat_client: Box::new(RealChatClient::new()),
             context: Arc::new(Mutex::new(Context::new())),
             config: config.clone(),
             permission: Permission::new(permission_input),
+            token_manager: TokenManager::new(reserve_budget, max_tokens)
         }
     }
 
@@ -92,10 +110,10 @@ impl Agent {
         self
     }
 
-    pub fn bind_config(&mut self, agent_config: AgentConfig) -> &mut Self {
-        self.max_steps = agent_config.agent_max_steps.clone();
-        self.permission = Permission::new(get_permission_input(&agent_config.permission_mode));
-        self.config = agent_config;
+    pub fn bind_config(&mut self, system_config: SystemConfig) -> &mut Self {
+        self.max_steps = system_config.agent.max_rounds.clone();
+        self.permission = Permission::new(get_permission_input(&system_config.permission.mode));
+        self.config = system_config;
         self
     }
 
@@ -185,6 +203,7 @@ impl Agent {
 
     pub async fn run(&mut self, prompt: String) -> anyhow::Result<AgentResult> {
         self.permission.reset().await;
+        self.user_instruction = prompt.clone();
         let mut context = Context::new();
         let event = Event::new(
             context.execution_id.clone(),
@@ -219,7 +238,7 @@ impl Agent {
 
             let response = (|| async {
                 match timeout(
-                    Duration::from_secs(self.config.agent_execute_timeout),
+                    Duration::from_secs(self.config.agent.execute_timeout),
                     self.chat_client.chat_create(request.clone()),
                 )
                 .await
@@ -228,7 +247,7 @@ impl Agent {
                     Err(_) => Err(anyhow!(TIMEOUT)),
                 }
             })
-            .retry(ExponentialBuilder::new().with_max_times(self.config.agent_execute_retry_count))
+            .retry(ExponentialBuilder::new().with_max_times(self.config.agent.execute_retry_count))
             .await?;
 
             let message = response
@@ -296,7 +315,9 @@ impl Agent {
     ) -> Vec<(&str, Vec<ContentItem>)> {
         let futures = tool_calls
             .iter()
-            .map(|call| async move { self.tool_item_execute(call).await });
+            .map(|call| async move { 
+                self.tool_item_execute(call).await 
+            });
         join_all(futures).await
     }
     async fn tool_item_execute(
@@ -314,8 +335,7 @@ impl Agent {
                 model: self.model.clone(),
                 config: self.config.clone(),
             };
-
-            let (status, content) = async {
+            let (status, mut content) = async {
                 match self.tool_box_map.get(&name) {
                     Some(tool) => {
                         tool.lock()
@@ -334,6 +354,37 @@ impl Agent {
             }
             .instrument(span)
             .await;
+
+            let result_token = self.token_manager.calculate_token(&content);
+
+            let mut query = String::new();
+            if status == ToolCallStatus::Success {
+                if let Some(tool) = self.tool_box_map.get(&name) {
+                    query = tool.lock().await.compress_query(&args).unwrap_or_default();
+                }
+            }
+            
+            if !query.is_empty() && result_token > self.config.tool.result_max_token {
+                match timeout(
+                    Duration::from_secs(self.config.vector.execute_timeout),
+                    async {
+                        compress(&query, &content, &self.config.vector).await
+                    }
+                ).await {
+                    Ok(result) => {
+                        debug!("before compress token is {}", result_token);
+                        let new_result_token = self.token_manager.calculate_token(&result);
+                        debug!("after compress token is {}", new_result_token);
+                        if new_result_token < result_token {
+                            content = result;
+                        }
+                    },
+                    Err(_) => {
+                        warn!("向量压缩超时，跳过压缩");
+                    }
+                }
+            }
+            
             return (
                 "tool_calls",
                 vec![ContentItem::ToolCallResult {

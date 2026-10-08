@@ -9,7 +9,7 @@ pub struct Context {
     pub event: Vec<Event>,
     pub current_step: usize,
     pub state: HashMap<String, Value>,
-    pub result: Option<String>,
+    pub result: Option<String>
 }
 
 impl Context {
@@ -19,7 +19,7 @@ impl Context {
             event: Vec::new(),
             current_step: 0,
             state: HashMap::new(),
-            result: None,
+            result: None
         }
     }
 
